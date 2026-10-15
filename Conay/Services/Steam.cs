@@ -19,10 +19,12 @@ using Steamworks.Ugc;
 
 namespace Conay.Services;
 
-public class Steam : IModSource, IDisposable
+public class Steam : IModSource, ISteamConnection, IDisposable
 {
     private const string WorkshopApiUrl =
         "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
+
+    private static readonly TimeSpan SteamStartupGrace = TimeSpan.FromSeconds(20);
 
     private readonly ILogger<Steam> _logger;
     private readonly HttpService _http;
@@ -31,6 +33,7 @@ public class Steam : IModSource, IDisposable
     private bool _isInitialized;
     private bool _isLoggedIn;
     private bool _isConanInstalled;
+    private bool _suspended;
     private string _steamAccountName = string.Empty;
 
     private readonly List<Item> _updateQueue = [];
@@ -68,11 +71,22 @@ public class Steam : IModSource, IDisposable
 
         SteamUGC.OnDownloadItemResult += OnModDownloadResult;
 
-        Initialize();
+        // A switch handed over from the previous instance closes Steam, which waits until Steam has let go of it
+        AppRestart.WaitForPreviousInstance(TimeSpan.FromSeconds(10));
 
-        if (!_isInitialized)
+        // That switch closes Steam, so stay away from it until SteamAccounts has finished it and resumes
+        if (SwitchRequest.Current != null)
         {
-            LaunchSteam();
+            _suspended = true;
+        }
+        else
+        {
+            Initialize();
+
+            if (!_isInitialized && !IsSteamRunning())
+            {
+                LaunchSteam();
+            }
         }
 
         _syncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
@@ -101,6 +115,8 @@ public class Steam : IModSource, IDisposable
 
     private void SyncSteam()
     {
+        if (_suspended) return;
+
         try
         {
             _isInitialized = SteamClient.IsValid;
@@ -120,6 +136,12 @@ public class Steam : IModSource, IDisposable
 
     private void Initialize()
     {
+        if (IsSteamStarting())
+        {
+            _notifyService.UpdateStatus(this, "Waiting for Steam to start..");
+            return;
+        }
+
         _notifyService.UpdateStatus(this, "Connecting to Steam..");
 
         try
@@ -144,6 +166,75 @@ public class Steam : IModSource, IDisposable
         }
     }
 
+    public static bool IsSteamRunning()
+    {
+        Process[] processes = Process.GetProcessesByName("steam");
+        foreach (Process process in processes)
+            process.Dispose();
+
+        return processes.Length > 0;
+    }
+
+    // Steam can crash when the Steam API is used while it's still starting up (seen right after switching accounts)
+    private static bool IsSteamStarting()
+    {
+        bool starting = false;
+        foreach (Process process in Process.GetProcessesByName("steam"))
+        {
+            try
+            {
+                starting |= DateTime.Now - process.StartTime < SteamStartupGrace;
+            }
+            catch
+            {
+                // ignored, the process can't be inspected (e.g. Steam runs as administrator)
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        return starting;
+    }
+
+    public ulong CurrentSteamId
+    {
+        get
+        {
+            if (!_isInitialized) return 0;
+
+            try
+            {
+                return SteamClient.SteamId.Value;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+    }
+
+    public bool IsUpdatingMods => _updating;
+
+    public void Disconnect()
+    {
+        _suspended = true;
+        _isInitialized = false;
+        _isLoggedIn = false;
+
+        try
+        {
+            SteamClient.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to disconnect from Steam!");
+        }
+    }
+
+    public void Resume() => _suspended = false;
+
     public async Task WaitForSteam()
     {
         while (!_isInitialized)
@@ -162,27 +253,35 @@ public class Steam : IModSource, IDisposable
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        Query query = Query.Items.WhereUserSubscribed(SteamClient.SteamId).SortByUpdateDate();
-        int pageNumber = 1;
-
-        while (true)
+        try
         {
-            ResultPage? page = await query.GetPageAsync(pageNumber);
-            if (page == null || page.Value.ResultCount == 0) break;
+            Query query = Query.Items.WhereUserSubscribed(SteamClient.SteamId).SortByUpdateDate();
+            int pageNumber = 1;
 
-            foreach (Item entry in page.Value.Entries)
+            while (true)
             {
-                if (entry.Result != Result.OK) continue;
+                ResultPage? page = await query.GetPageAsync(pageNumber);
+                if (page == null || page.Value.ResultCount == 0) break;
 
-                DateTime localLastUpdated = ModList.GetModFileLastUpdate(_workshopPath, entry.Id.Value);
+                foreach (Item entry in page.Value.Entries)
+                {
+                    if (entry.Result != Result.OK) continue;
 
-                if (!entry.NeedsUpdate && entry.Updated < localLastUpdated) continue;
+                    DateTime localLastUpdated = ModList.GetModFileLastUpdate(_workshopPath, entry.Id.Value);
 
-                _logger.LogDebug("Needs update: {Mod}", entry.Title);
-                QueueModUpdate(entry);
+                    if (!entry.NeedsUpdate && entry.Updated < localLastUpdated) continue;
+
+                    _logger.LogDebug("Needs update: {Mod}", entry.Title);
+                    QueueModUpdate(entry);
+                }
+
+                pageNumber++;
             }
-
-            pageNumber++;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Subscribed mods check was interrupted!");
+            return;
         }
 
         if (_updating)
@@ -395,7 +494,17 @@ public class Steam : IModSource, IDisposable
 
     public async Task<ModInfo?> GetModData(ulong modId)
     {
-        Item? mod = await Item.GetAsync(modId);
+        Item? mod;
+        try
+        {
+            mod = await Item.GetAsync(modId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get mod data ({Mod})!", modId);
+            return null;
+        }
+
         if (mod == null) return null;
 
         ModInfo data = new()
@@ -535,27 +644,57 @@ public class Steam : IModSource, IDisposable
                 LegacyInstallDir);
     }
 
-    private void LaunchSteam()
+    public void LaunchSteam()
     {
         _notifyService.UpdateStatus(this, "Launching Steam..");
+        StartClient(_logger);
+    }
 
-        if (OperatingSystem.IsLinux())
+    // Starts Steam like it's started by hand (with its window), without the game settings the Steam API put into
+    // this process: Steam started with them crashed on startup
+    internal static void StartClient(ILogger logger)
+    {
+        try
         {
-            try
+            if (OperatingSystem.IsLinux())
             {
-                if (DetachedProcess.Start("steam", ["steam", "-silent"]))
+                if (DetachedProcess.Start("steam", ["steam"], startupEnvironment: true))
                     return;
             }
-            catch (Exception ex)
+            else if (FindClientExecutable() is { } steamExe)
             {
-                _logger.LogError(ex, "Failed to launch Steam!");
+                using Process? process = Process.Start(CreateClientStartInfo(steamExe, StartupEnvironment.Variables));
+                if (process != null)
+                    return;
             }
-
-            Protocol.Open("steam://");
-            return;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to launch Steam!");
         }
 
-        Protocol.Open("steam://-/\" -silent");
+        Protocol.Open("steam://open/main");
+    }
+
+    private static string? FindClientExecutable()
+    {
+        if (SteamPaths.FindSteamRoot() is not { } root) return null;
+
+        string steamExe = Path.GetFullPath(Path.Combine(root, "steam.exe"));
+        return File.Exists(steamExe) ? steamExe : null;
+    }
+
+    internal static ProcessStartInfo CreateClientStartInfo(string steamExe,
+        IReadOnlyDictionary<string, string> startupEnvironment)
+    {
+        ProcessStartInfo startInfo = new(steamExe)
+        {
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(steamExe)
+        };
+
+        StartupEnvironment.Apply(startInfo.Environment, startupEnvironment);
+        return startInfo;
     }
 
     public static void OpenWorkshopPage(ulong modId)
