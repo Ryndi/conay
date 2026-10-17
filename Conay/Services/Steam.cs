@@ -136,10 +136,14 @@ public class Steam : IModSource, ISteamConnection, IDisposable
 
     private void Initialize()
     {
-        if (IsSteamStarting())
+        switch (GetClientState())
         {
-            _notifyService.UpdateStatus(this, "Waiting for Steam to start..");
-            return;
+            case ClientState.NotRunning:
+                _notifyService.UpdateStatus(this, "Steam is not running! Start it to continue.");
+                return;
+            case ClientState.Starting:
+                _notifyService.UpdateStatus(this, "Waiting for Steam to start..");
+                return;
         }
 
         _notifyService.UpdateStatus(this, "Connecting to Steam..");
@@ -175,19 +179,38 @@ public class Steam : IModSource, ISteamConnection, IDisposable
         return processes.Length > 0;
     }
 
-    // Steam can crash when the Steam API is used while it's still starting up (seen right after switching accounts)
-    private static bool IsSteamStarting()
+    internal enum ClientState
     {
-        bool starting = false;
+        NotRunning,
+        Starting,
+        Running
+    }
+
+    // Conay only connects to a Steam that's done starting up, trying while it's closed only fails
+    internal static ClientState GetClientState(IReadOnlyCollection<DateTime?> startTimes, DateTime now)
+    {
+        if (startTimes.Count == 0) return ClientState.NotRunning;
+
+        return startTimes.Any(startTime => now - startTime < SteamStartupGrace)
+            ? ClientState.Starting
+            : ClientState.Running;
+    }
+
+    private static ClientState GetClientState() => GetClientState(GetClientStartTimes(), DateTime.Now);
+
+    // When each Steam process started, null if it can't be inspected (e.g. Steam runs as administrator)
+    private static List<DateTime?> GetClientStartTimes()
+    {
+        List<DateTime?> startTimes = [];
         foreach (Process process in Process.GetProcessesByName("steam"))
         {
             try
             {
-                starting |= DateTime.Now - process.StartTime < SteamStartupGrace;
+                startTimes.Add(process.StartTime);
             }
             catch
             {
-                // ignored, the process can't be inspected (e.g. Steam runs as administrator)
+                startTimes.Add(null);
             }
             finally
             {
@@ -195,7 +218,7 @@ public class Steam : IModSource, ISteamConnection, IDisposable
             }
         }
 
-        return starting;
+        return startTimes;
     }
 
     public ulong CurrentSteamId
