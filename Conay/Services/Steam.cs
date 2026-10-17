@@ -651,7 +651,7 @@ public class Steam : IModSource, ISteamConnection, IDisposable
     }
 
     // Starts Steam like it's started by hand (with its window), without the game settings the Steam API put into
-    // this process: Steam started with them crashed on startup
+    // this process
     internal static void StartClient(ILogger logger)
     {
         try

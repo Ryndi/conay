@@ -6,7 +6,7 @@ namespace Conay.Tests.Utils;
 // The environment processes Conay starts get, other than the game
 public class StartupEnvironmentTests
 {
-    // What connecting to Steam as Conan Exiles put into Conay's environment, from the dumps of the Steam it crashed
+    // What connecting to Steam as Conan Exiles put into Conay's environment, seen in dumps of a Steam Conay started
     internal static readonly Dictionary<string, string> ConanExilesGameEnvironment = new()
     {
         ["AMD_VK_PIPELINE_CACHE_FILENAME"] = "steamapp_shader_cache",

@@ -36,9 +36,8 @@ public class RealSteamStartupTests
         await StartSteamAndWatchIt();
     }
 
-    // The Steam the new Conay started after switching accounts crashed four times in a row: connecting to Steam as
-    // Conan Exiles put the game's settings into Conay's environment, Steam inherited them and loaded its game overlay
-    // into itself, and AMD's GameManager hook in it called itself until the stack overflowed (from the crash dumps)
+    // Like a Conay that connected to Steam as Conan Exiles and then started it, with the game's settings that put
+    // into its environment
     [RealSteamFact]
     public async Task Steam_SurvivesBeingStartedByAConayThatConnectedToSteam()
     {

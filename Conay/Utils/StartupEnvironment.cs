@@ -7,9 +7,8 @@ using System.Linq;
 namespace Conay.Utils;
 
 // The environment for processes Conay starts other than the game. Connecting to Steam as Conan Exiles adds the
-// game's settings to Conay's own environment (shader cache paths, Steam's Vulkan layers), and Steam started with
-// them crashed every time: it loads its game overlay into itself as if it were the game, and AMD's GameManager hook
-// in it then calls itself until the stack overflows.
+// game's settings to Conay's own environment (shader cache paths, Steam's Vulkan layers), which are meant for the
+// game only.
 public static class StartupEnvironment
 {
     // What Steam sets up for a running game, seen in Conay's environment after connecting

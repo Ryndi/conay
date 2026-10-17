@@ -29,7 +29,7 @@ public class SteamClientStartTests
         Assert.False(startInfo.UseShellExecute);
     }
 
-    // Steam started with Conan Exiles' game settings crashed on startup, four times in a row
+    // Not the game settings connecting to Steam as Conan Exiles put into Conay's environment
     [Fact]
     public void CreateClientStartInfo_GivesSteamTheEnvironmentConayStartedWith()
     {

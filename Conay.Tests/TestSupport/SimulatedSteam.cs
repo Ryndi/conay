@@ -5,8 +5,7 @@ namespace Conay.Tests.TestSupport;
 
 // Stands in for the Steam client on this machine, shared by every simulated Conay instance. It behaves the way
 // the real one was seen to while account switching was built, and records a problem whenever it's handled in a
-// way that broke the real one (frozen Conay, Conan Exiles stuck as running). Steam's crash on startup came from
-// the environment it was started with, which StartupEnvironment and its tests cover instead.
+// way that broke the real one (frozen Conay, Conan Exiles stuck as running).
 internal sealed class SimulatedSteam : ISteamHost
 {
     private readonly string _loginUsersPath;
