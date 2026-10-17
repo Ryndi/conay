@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -34,6 +35,7 @@ public class Steam : IModSource, ISteamConnection, IDisposable
     private bool _isLoggedIn;
     private bool _isConanInstalled;
     private bool _suspended;
+    private bool _watchingStartup;
     private string _steamAccountName = string.Empty;
 
     private readonly List<Item> _updateQueue = [];
@@ -136,6 +138,9 @@ public class Steam : IModSource, ISteamConnection, IDisposable
 
     private void Initialize()
     {
+        // Conay connects once the Steam it started got through starting up, the watcher reports how that goes
+        if (_watchingStartup) return;
+
         switch (GetClientState())
         {
             case ClientState.NotRunning:
@@ -671,6 +676,30 @@ public class Steam : IModSource, ISteamConnection, IDisposable
     {
         _notifyService.UpdateStatus(this, "Launching Steam..");
         StartClient(_logger);
+
+        // Steam can crash while it starts up on some PCs (see SteamStartupWatcher), so make sure it gets going
+        if (OperatingSystem.IsWindows() && !_watchingStartup)
+            _ = WatchStartup();
+    }
+
+    [SupportedOSPlatform("windows")]
+    private async Task WatchStartup()
+    {
+        _watchingStartup = true;
+
+        try
+        {
+            using SteamClientProcesses processes = new(_logger);
+            await new SteamStartupWatcher(_logger, _notifyService, processes).Watch();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to watch Steam start!");
+        }
+        finally
+        {
+            _watchingStartup = false;
+        }
     }
 
     // Starts Steam like it's started by hand (with its window), without the game settings the Steam API put into
